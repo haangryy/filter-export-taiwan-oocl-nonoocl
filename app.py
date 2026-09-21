@@ -26,7 +26,7 @@ def clean_mst(series: pd.Series) -> pd.Series:
     """Làm sạch MST: Xóa dấu ' ở đầu, khoảng trắng thừa và đưa về dạng chuỗi chuẩn."""
     return (
         series.astype(str)
-        .str.replace(r"^'", "", regex=True)  # Xóa dấu ' ở đầu
+        .str.replace(r"^'", "", regex=True)
         .str.strip()
         .replace(["nan", "None", "NaN", "<NA>"], "")
     )
@@ -35,7 +35,6 @@ def clean_mst(series: pd.Series) -> pd.Series:
 if uploaded_export_file and uploaded_master_file:
     try:
         with st.spinner("Đang tải dữ liệu..."):
-            # 1. Đọc file
             if uploaded_export_file.name.endswith(".csv"):
                 df_export = pd.read_csv(uploaded_export_file, dtype=str)
             else:
@@ -46,17 +45,11 @@ if uploaded_export_file and uploaded_master_file:
             else:
                 df_master = pd.read_excel(uploaded_master_file, dtype=str)
 
-        # Chuẩn hóa tên cột (xóa khoảng trắng thừa ở đầu/cuối tên cột)
+        # 1. Chuẩn hóa tên cột
         df_export.columns = df_export.columns.str.strip()
         df_master.columns = df_master.columns.str.strip()
 
-        # Kiểm tra cột bắt buộc
-        req_export = [
-            "POD",
-            "CARRIER",
-            "MST SHIPPER",
-            "TÊN SHIPPER TRÊN B/L",
-        ]
+        req_export = ["POD", "CARRIER", "MST SHIPPER", "TÊN SHIPPER TRÊN B/L"]
         missing_exp = [c for c in req_export if c not in df_export.columns]
 
         if missing_exp:
@@ -64,7 +57,7 @@ if uploaded_export_file and uploaded_master_file:
             st.stop()
 
         # ---------------------------------------------------------------------
-        # BƯỚC 1: LỌC DATA TAIWAN BẰNG CỘT 'POD'
+        # BƯỚC 1: LỌC TAIWAN PORTS (POD)
         # ---------------------------------------------------------------------
         taiwan_ports = [
             "TWTXG",
@@ -77,9 +70,8 @@ if uploaded_export_file and uploaded_master_file:
             "TWTAW",
             "TW078",
         ]
-
-        # Biểu thức chính quy tìm các mã cảng Taiwan
         pattern_pod = "|".join(taiwan_ports)
+
         df_taiwan = df_export[
             df_export["POD"]
             .fillna("")
@@ -97,20 +89,19 @@ if uploaded_export_file and uploaded_master_file:
             st.stop()
 
         # ---------------------------------------------------------------------
-        # BƯỚC 2: FIX LỖI MST SHIPPER (XÓA DẤU ' Ở ĐẦU)
+        # BƯỚC 2: CHUẨN HÓA MST SHIPPER
         # ---------------------------------------------------------------------
-        df_taiwan["MST SHIPPER_CLEAN"] = clean_mst(df_taiwan["MST SHIPPER"])
+        df_taiwan["MST_SHIPPER_CLEAN"] = clean_mst(df_taiwan["MST SHIPPER"])
 
         if "MST SHIPPER" in df_master.columns:
-            df_master["MST SHIPPER_CLEAN"] = clean_mst(df_master["MST SHIPPER"])
+            df_master["MST_SHIPPER_CLEAN"] = clean_mst(df_master["MST SHIPPER"])
         else:
             st.error("File Master không có cột 'MST SHIPPER'!")
             st.stop()
 
         # ---------------------------------------------------------------------
-        # BƯỚC 3: MERGE VỚI FILE MASTER & LOGIC FALLBACK
+        # BƯỚC 3: MERGE VỚI FILE MASTER & LOGIC FALLBACK TÊN DN
         # ---------------------------------------------------------------------
-        # Danh sách các cột mong muốn lấy từ File Master
         master_info_cols = [
             "Tên DN(Tiếng Việt)",
             "Tên DN(Tiếng Anh)",
@@ -127,27 +118,25 @@ if uploaded_export_file and uploaded_master_file:
             "Email người phụ trách XNK",
         ]
 
-        # Chỉ lấy những cột thực sự có trong File Master
         existing_master_cols = [
             c for c in master_info_cols if c in df_master.columns
         ]
 
-        # Bổ sung cột 'MST SHIPPER_CLEAN' vào danh sách dùng để merge
+        # Loại bỏ trùng lặp trong file Master theo MST để tránh nhân đôi dòng
         master_subset = df_master[
-            ["MST SHIPPER_CLEAN"] + existing_master_cols
-        ].drop_duplicates(subset=["MST SHIPPER_CLEAN"])
+            ["MST_SHIPPER_CLEAN"] + existing_master_cols
+        ].drop_duplicates(subset=["MST_SHIPPER_CLEAN"])
 
-        # Thực hiện Left Join
+        # Merge (Giữ nguyên CARRIER gốc của Export)
         df_merged = pd.merge(
             df_taiwan,
             master_subset,
-            on="MST SHIPPER_CLEAN",
+            on="MST_SHIPPER_CLEAN",
             how="left",
             suffixes=("", "_master"),
         )
 
-        # Logic Fallback cho 'Tên DN(Tiếng Việt)':
-        # Nếu thiếu/rỗng trong Master -> Lấy 'TÊN SHIPPER TRÊN B/L' của File Export
+        # Fallback tên DN: Nếu thiếu/rỗng từ Master thì lấy 'TÊN SHIPPER TRÊN B/L'
         if "Tên DN(Tiếng Việt)" not in df_merged.columns:
             df_merged["Tên DN(Tiếng Việt)"] = np.nan
 
@@ -163,15 +152,16 @@ if uploaded_export_file and uploaded_master_file:
             df_merged["Tên DN(Tiếng Việt)"],
         )
 
-        # Đảm bảo các cột cần chèn tồn tại (nếu trong Export chưa có)
+        # Cập nhật lại cột 'MST SHIPPER' chính thức đã xóa dấu '
+        df_merged["MST SHIPPER"] = df_merged["MST_SHIPPER_CLEAN"]
+
+        # Cột phụ bổ sung từ Export nếu chưa có
         for extra_col in ["MST AGENT", "AGENT HANDLE NAME & SHIPPER"]:
             if extra_col not in df_merged.columns:
                 df_merged[extra_col] = ""
 
-        # ---------------------------------------------------------------------
-        # BƯỚC 4: SẮP XẾP & LỌC CÁC CỘT THEO YÊU CẦU FINAL FILE
-        # ---------------------------------------------------------------------
-        final_column_structure = [
+        # Cấu trúc các cột cần giữ lại
+        target_columns = [
             "MST SHIPPER",
             "Tên DN(Tiếng Việt)",
             "MST AGENT",
@@ -191,78 +181,73 @@ if uploaded_export_file and uploaded_master_file:
             "Email người phụ trách XNK",
         ]
 
-        # Bổ sung các cột chưa tồn tại thành cột trống
-        for col in final_column_structure:
+        for col in target_columns:
             if col not in df_merged.columns:
                 df_merged[col] = ""
 
-        # Cập nhật lại giá trị MST SHIPPER đã làm sạch
-        df_merged["MST SHIPPER"] = df_merged["MST SHIPPER_CLEAN"]
-
-        # Trích xuất đúng cấu hình cột Final
-        df_final_all = df_merged[final_column_structure].copy()
+        df_final_all = df_merged[target_columns].copy()
 
         # ---------------------------------------------------------------------
-        # BƯỚC 5: TÁCH THÀNH 2 FILE (OOCL VS NON-OOCL)
+        # BƯỚC 4: LỌC PHÂN LOẠI CHUẨN CARRIER (OCL / OOCL VS KHÁC)
         # ---------------------------------------------------------------------
-        # Lọc các carrier chứa từ khóa OOCL hoặc OOL
-        pattern_ocl = r"\b(OCL|OOCL|OOL)\b|OCL|OOCL|OOL"
-        is_oocl = (
-            df_final_all["CARRIER"]
-            .fillna("")
-            .astype(str)
-            .str.upper()
-            .str.contains("OOCL|OOL", regex=True)
+        # Làm sạch chuỗi CARRIER để so sánh chính xác
+        carrier_clean = (
+            df_final_all["CARRIER"].fillna("").astype(str).str.strip().str.upper()
         )
 
-        df_oocl = df_final_all[is_oocl].reset_index(drop=True)
-        df_non_oocl = df_final_all[~is_oocl].reset_index(drop=True)
+        # Điều kiện bắt chính xác các dạng đặt tên của hãng OCL / OOCL / OOL
+        is_ocl = carrier_clean.str.contains(
+            r"\bOCL\b|\bOOCL\b|\bOOL\b|ORIENT OVERSEAS", regex=True
+        )
+
+        df_ocl = df_final_all[is_ocl].reset_index(drop=True)
+        df_non_ocl = df_final_all[~is_ocl].reset_index(drop=True)
 
         # ---------------------------------------------------------------------
-        # BƯỚC 6: HIỂN THỊ KẾT QUẢ VÀ TẢI FILE
+        # BƯỚC 5: XUẤT 2 FILE TẢI VỀ RIÊNG BIỆT
         # ---------------------------------------------------------------------
-        st.success("Xử lý và tổng hợp dữ liệu thành công!")
+        st.success("✅ Đã phân loại dữ liệu thành công!")
 
         col1, col2 = st.columns(2)
 
-        # --- CỘT 1: FILE OOCL ---
+        # --- CỘT 1: FILE OCL / OOCL ---
         with col1:
-            st.subheader(f"1. Doanh nghiệp dùng Hãng tàu OOCL ({len(df_oocl)})")
-            st.dataframe(df_oocl.head(10), use_container_width=True)
+            st.subheader(f"1. Hãng tàu OCL / OOCL ({len(df_ocl)} dòng)")
+            st.dataframe(df_ocl, use_container_width=True, height=300)
 
-            buffer_oocl = io.BytesIO()
-            with pd.ExcelWriter(buffer_oocl, engine="openpyxl") as writer:
-                df_oocl.to_excel(
-                    writer, index=False, sheet_name="Taiwan_OOCL_Shippers"
+            buffer_ocl = io.BytesIO()
+            with pd.ExcelWriter(buffer_ocl, engine="openpyxl") as writer:
+                df_ocl.to_excel(
+                    writer, index=False, sheet_name="OCL_Carrier_Shippers"
                 )
 
             st.download_button(
-                label="📥 Tải xuống File OOCL (.xlsx)",
-                data=buffer_oocl.getvalue(),
-                file_name="Taiwan_Export_OOCL_Shippers.xlsx",
+                label="📥 Tải File 1: Danh sách Carrier OCL (.xlsx)",
+                data=buffer_ocl.getvalue(),
+                file_name="Taiwan_Export_OCL_Carrier.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="btn_oocl",
+                key="btn_download_ocl",
             )
 
-        # --- CỘT 2: FILE NON-OOCL ---
+        # --- CỘT 2: FILE NON-OCL ---
         with col2:
             st.subheader(
-                f"2. Doanh nghiệp dùng Hãng tàu còn lại ({len(df_non_oocl)})"
+                f"2. Các Hãng tàu còn lại ({len(df_non_ocl)} dòng)"
             )
-            st.dataframe(df_non_oocl.head(10), use_container_width=True)
+            st.dataframe(df_non_ocl, use_container_width=True, height=300)
 
-            buffer_non_oocl = io.BytesIO()
-            with pd.ExcelWriter(buffer_non_oocl, engine="openpyxl") as writer:
-                df_non_oocl.to_excel(
-                    writer, index=False, sheet_name="Taiwan_NonOOCL_Shippers"
+            buffer_non_ocl = io.BytesIO()
+            with pd.ExcelWriter(buffer_non_ocl, engine="openpyxl") as writer:
+                df_non_ocl.to_excel(
+                    writer, index=False, sheet_name="Non_OCL_Carrier_Shippers"
                 )
 
             st.download_button(
-                label="📥 Tải xuống File Non-OOCL (.xlsx)",
-                data=buffer_non_oocl.getvalue(),
-                file_name="Taiwan_Export_NonOOCL_Shippers.xlsx",
+                label="📥 Tải File 2: Danh sách Carrier Còn Lại (.xlsx)",
+                data=buffer_non_ocl.getvalue(),
+                file_name="Taiwan_Export_Non_OCL_Carriers.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="btn_non_oocl",
+                key="btn_download_non_ocl",
             )
 
     except Exception as e:
@@ -270,4 +255,4 @@ if uploaded_export_file and uploaded_master_file:
         st.exception(e)
 
 else:
-    st.info("👋 Vui lòng tải lên cả 2 file (File Export & File Master) ở cột bên trái để bắt đầu.")
+    st.info("👋 Vui lòng tải lên đầy đủ cả File Export và File Master ở góc trái.")
