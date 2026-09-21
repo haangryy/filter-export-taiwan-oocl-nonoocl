@@ -81,7 +81,7 @@ if uploaded_export_file and uploaded_master_file:
         ].copy()
 
         st.info(
-            f"📊 Tìm thấy **{len(df_taiwan)}** dòng xuất khẩu đi Taiwan (trên tổng số {len(df_export)} dòng)."
+            f"📊 Tìm thấy **{len(df_taiwan)}** dòng lô hàng xuất khẩu đi Taiwan."
         )
 
         if len(df_taiwan) == 0:
@@ -122,12 +122,12 @@ if uploaded_export_file and uploaded_master_file:
             c for c in master_info_cols if c in df_master.columns
         ]
 
-        # Loại bỏ trùng lặp trong file Master theo MST để tránh nhân đôi dòng
+        # Khử trùng lặp trong File Master trước khi Merge
         master_subset = df_master[
             ["MST_SHIPPER_CLEAN"] + existing_master_cols
-        ].drop_duplicates(subset=["MST_SHIPPER_CLEAN"])
+        ].drop_duplicates(subset=["MST_SHIPPER_CLEAN"], keep="first")
 
-        # Merge (Giữ nguyên CARRIER gốc của Export)
+        # Merge thông tin Master vào Export
         df_merged = pd.merge(
             df_taiwan,
             master_subset,
@@ -152,7 +152,7 @@ if uploaded_export_file and uploaded_master_file:
             df_merged["Tên DN(Tiếng Việt)"],
         )
 
-        # Cập nhật lại cột 'MST SHIPPER' chính thức đã xóa dấu '
+        # Cập nhật cột MST SHIPPER chính thức đã làm sạch
         df_merged["MST SHIPPER"] = df_merged["MST_SHIPPER_CLEAN"]
 
         # Cột phụ bổ sung từ Export nếu chưa có
@@ -160,7 +160,7 @@ if uploaded_export_file and uploaded_master_file:
             if extra_col not in df_merged.columns:
                 df_merged[extra_col] = ""
 
-        # Cấu trúc các cột cần giữ lại
+        # Cấu trúc các cột chuẩn Final
         target_columns = [
             "MST SHIPPER",
             "Tên DN(Tiếng Việt)",
@@ -188,43 +188,60 @@ if uploaded_export_file and uploaded_master_file:
         df_final_all = df_merged[target_columns].copy()
 
         # ---------------------------------------------------------------------
-        # BƯỚC 4: LỌC PHÂN LOẠI CHUẨN CARRIER (OCL / OOCL VS KHÁC)
+        # BƯỚC 4: LỌC PHÂN LOẠI CARRIER (OCL / OOCL VS CÁC HÃNG TÀU KHÁC)
         # ---------------------------------------------------------------------
-        # Làm sạch chuỗi CARRIER để so sánh chính xác
         carrier_clean = (
             df_final_all["CARRIER"].fillna("").astype(str).str.strip().str.upper()
         )
 
-        # Điều kiện bắt chính xác các dạng đặt tên của hãng OCL / OOCL / OOL
         is_ocl = carrier_clean.str.contains(
             r"\bOCL\b|\bOOCL\b|\bOOL\b|ORIENT OVERSEAS", regex=True
         )
 
-        df_ocl = df_final_all[is_ocl].reset_index(drop=True)
-        df_non_ocl = df_final_all[~is_ocl].reset_index(drop=True)
+        df_ocl_raw = df_final_all[is_ocl].copy()
+        df_non_ocl_raw = df_final_all[~is_ocl].copy()
 
         # ---------------------------------------------------------------------
-        # BƯỚC 5: XUẤT 2 FILE TẢI VỀ RIÊNG BIỆT
+        # BƯỚC 5: KHỬ TRÙNG LẶP (ĐẢM BẢO MỖI MST SHIPPER CHỈ XUẤT HIỆN 1 LẦN)
         # ---------------------------------------------------------------------
-        st.success("✅ Đã phân loại dữ liệu thành công!")
+        # Loại bỏ các dòng bị trống MST SHIPPER
+        df_ocl_valid = df_ocl_raw[
+            df_ocl_raw["MST SHIPPER"].str.strip() != ""
+        ].copy()
+        df_non_ocl_valid = df_non_ocl_raw[
+            df_non_ocl_raw["MST SHIPPER"].str.strip() != ""
+        ].copy()
+
+        # Giữ lại dòng đầu tiên cho mỗi MST SHIPPER
+        df_ocl = df_ocl_valid.drop_duplicates(
+            subset=["MST SHIPPER"], keep="first"
+        ).reset_index(drop=True)
+        df_non_ocl = df_non_ocl_valid.drop_duplicates(
+            subset=["MST SHIPPER"], keep="first"
+        ).reset_index(drop=True)
+
+        # ---------------------------------------------------------------------
+        # BƯỚC 6: HIỂN THỊ KẾT QUẢ VÀ TẢI FILE
+        # ---------------------------------------------------------------------
+        st.success("✅ Đã xử lý & khử trùng lặp thành công!")
 
         col1, col2 = st.columns(2)
 
         # --- CỘT 1: FILE OCL / OOCL ---
         with col1:
-            st.subheader(f"1. Hãng tàu OCL / OOCL ({len(df_ocl)} dòng)")
+            st.subheader(f"1. Doanh nghiệp dùng Carrier OCL ({len(df_ocl)} DN)")
             st.dataframe(df_ocl, use_container_width=True, height=300)
 
             buffer_ocl = io.BytesIO()
             with pd.ExcelWriter(buffer_ocl, engine="openpyxl") as writer:
                 df_ocl.to_excel(
-                    writer, index=False, sheet_name="OCL_Carrier_Shippers"
+                    writer, index=False, sheet_name="OCL_Shippers_Unique"
                 )
 
             st.download_button(
-                label="📥 Tải File 1: Danh sách Carrier OCL (.xlsx)",
+                label="📥 Tải File 1: Danh sách OCL (Đã lọc trùng MST) (.xlsx)",
                 data=buffer_ocl.getvalue(),
-                file_name="Taiwan_Export_OCL_Carrier.xlsx",
+                file_name="Taiwan_Export_OCL_Unique_Shippers.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="btn_download_ocl",
             )
@@ -232,20 +249,20 @@ if uploaded_export_file and uploaded_master_file:
         # --- CỘT 2: FILE NON-OCL ---
         with col2:
             st.subheader(
-                f"2. Các Hãng tàu còn lại ({len(df_non_ocl)} dòng)"
+                f"2. Doanh nghiệp dùng Carrier khác ({len(df_non_ocl)} DN)"
             )
             st.dataframe(df_non_ocl, use_container_width=True, height=300)
 
             buffer_non_ocl = io.BytesIO()
             with pd.ExcelWriter(buffer_non_ocl, engine="openpyxl") as writer:
                 df_non_ocl.to_excel(
-                    writer, index=False, sheet_name="Non_OCL_Carrier_Shippers"
+                    writer, index=False, sheet_name="Non_OCL_Shippers_Unique"
                 )
 
             st.download_button(
-                label="📥 Tải File 2: Danh sách Carrier Còn Lại (.xlsx)",
+                label="📥 Tải File 2: Danh sách Carrier Khác (Đã lọc trùng MST) (.xlsx)",
                 data=buffer_non_ocl.getvalue(),
-                file_name="Taiwan_Export_Non_OCL_Carriers.xlsx",
+                file_name="Taiwan_Export_Non_OCL_Unique_Shippers.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="btn_download_non_ocl",
             )
