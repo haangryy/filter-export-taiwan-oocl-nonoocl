@@ -138,7 +138,60 @@ if file_export is not None and file_master is not None:
                 .str.contains(pattern, na=False)
             ].copy()
 
-            # Bước 2: Tách hãng tàu OCL và Carrier khác
+            import numpy as np
+import pandas as pd
+            # Bước 2: VLOOKUP & FALLBACK LOGIC (MỚI THÊM)
+# 1. Đọc dữ liệu (Giả định df_export và df_master đã được read_excel/read_csv)
+# df_export: DataFrame chứa data từ File Export
+# df_master: DataFrame chứa data từ File Master
+
+# 2. Thực hiện Merge/Lookup giữa File Export và File Master theo MST SHIPPER
+# (Dùng left join để giữ nguyên toàn bộ dòng từ File Export)
+df_merged = pd.merge(
+    df_export,
+    df_master[['MST SHIPPER', 'Tên DN(Tiếng Việt)']],
+    on='MST SHIPPER',
+    how='left',
+)
+
+# 3. Xử lý logic Fallback:
+# Nếu 'Tên DN(Tiếng Việt)' bị thiếu (NaN/blank), lấy giá trị từ 'TÊN SHIPPER TRÊN B/L'
+df_merged['Tên DN(Tiếng Việt)'] = df_merged['Tên DN(Tiếng Việt)'].fillna(
+    df_merged['TÊN SHIPPER TRÊN B/L']
+)
+
+# Trường hợp cột 'Tên DN(Tiếng Việt)' nhận chuỗi rỗng '' thay vì NaN:
+# df_merged['Tên DN(Tiếng Việt)'] = np.where(
+#     (df_merged['Tên DN(Tiếng Việt)'].isna()) | (df_merged['Tên DN(Tiếng Việt)'].str.strip() == ''),
+#     df_merged['TÊN SHIPPER TRÊN B/L'],
+#     df_merged['Tên DN(Tiếng Việt)']
+# )
+
+
+# 4. Sắp xếp lại thứ tự các cột để 2 cột mới nằm ngay bên cạnh 'Tên DN(Tiếng Việt)'
+# Xác định danh sách các cột mong muốn theo thứ tự
+cols = list(df_merged.columns)
+
+# Loại bỏ các cột cần chèn để tránh trùng lặp thứ tự
+for col in ['Tên DN(Tiếng Việt)', 'MST AGENT', 'AGENT HANDLE NAME & SHIPPER']:
+    if col in cols:
+        cols.remove(col)
+
+# Tìm vị trí thích hợp để chèn cụm cột này vào DataFrame final
+# Ví dụ: chèn ngay sau cột 'TÊN SHIPPER TRÊN B/L'
+insert_loc = cols.index('TÊN SHIPPER TRÊN B/L') + 1
+
+new_col_order = (
+    cols[:insert_loc]
+    + ['Tên DN(Tiếng Việt)', 'MST AGENT', 'AGENT HANDLE NAME & SHIPPER']
+    + cols[insert_loc:]
+)
+
+df_final = df_merged[new_col_order]
+
+# 5. Xuất File Final
+df_final.to_excel('File_Final_Output.xlsx', index=False)
+            # Bước 3: Tách hãng tàu OCL và Carrier khác
             is_ocl = (
                 df_taiwan[col_carrier]
                 .astype(str)
