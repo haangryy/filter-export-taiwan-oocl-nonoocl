@@ -206,6 +206,7 @@ if uploaded_export_file and uploaded_master_file:
         # BƯỚC 5: TÁCH THÀNH 2 FILE (OOCL VS NON-OOCL)
         # ---------------------------------------------------------------------
         # Lọc các carrier chứa từ khóa OOCL hoặc OOL
+        pattern_ocl = r"\b(OCL|OOCL|OOL)\b|OCL|OOCL|OOL"
         is_oocl = (
             df_final_all["CARRIER"]
             .fillna("")
