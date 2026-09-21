@@ -2,7 +2,7 @@ import io
 import pandas as pd
 import streamlit as st
 
-# Danh sách mã cảng Taiwan
+# Danh sách Port Code cảng Đài Loan (Taiwan)
 TAIWAN_POD_KEYWORDS = [
     "TWTXG",
     "TWTPE",
@@ -15,7 +15,7 @@ TAIWAN_POD_KEYWORDS = [
     "TW078",
 ]
 
-# Danh sách 15 cột đầu ra chuẩn
+# Danh sách 15 cột bắt buộc của File Final
 FINAL_COLUMNS = [
     "MST SHIPPER",
     "Tên DN(Tiếng Việt)",
@@ -39,7 +39,7 @@ st.set_page_config(
 )
 st.title("Ứng dụng Lọc & Đối chiếu Data Doanh Nghiệp Xuất Khẩu Taiwan")
 
-# 1. Upload files
+# 1. Tải lên 2 file dữ liệu
 col1, col2 = st.columns(2)
 with col1:
     file_export = st.file_uploader(
@@ -66,16 +66,25 @@ def to_excel_bytes(df):
     return output.getvalue()
 
 
+# Hàm làm sạch dấu nháy đơn ' và khoảng trắng thừa trong Mã Số Thuế
+def clean_mst(series):
+    return (
+        series.astype(str)
+        .str.replace("'", "", regex=False)  # Loại bỏ dấu nháy đơn ở đầu/trong chuỗi
+        .str.replace('"', "", regex=False)  # Loại bỏ dấu nháy kép nếu có
+        .str.strip()  # Loại bỏ khoảng trắng thừa ở 2 đầu
+    )
+
+
 if file_export is not None and file_master is not None:
     try:
         df_export = load_data(file_export)
         df_master = load_data(file_master)
 
-        st.success("Đã tải xong 2 file dữ liệu!")
+        st.success("Tải thành công cả 2 file dữ liệu!")
 
-        # Ghép khớp cột
         st.write("---")
-        st.subheader("Kiểm tra tên các cột ghép nối:")
+        st.subheader("Kiểm tra & Khớp cột giữa các file:")
         c1, c2, c3, c4 = st.columns(4)
 
         with c1:
@@ -120,7 +129,7 @@ if file_export is not None and file_master is not None:
             )
 
         if st.button("Tiến hành Lọc & Tách File", type="primary"):
-            # Lọc POD đi Taiwan
+            # Bước 1: Lọc dữ liệu xuất đi Taiwan
             pattern = "|".join(TAIWAN_POD_KEYWORDS)
             df_taiwan = df_export[
                 df_export[col_pod]
@@ -129,7 +138,7 @@ if file_export is not None and file_master is not None:
                 .str.contains(pattern, na=False)
             ].copy()
 
-            # Tách OCL và Non-OCL
+            # Bước 2: Tách hãng tàu OCL và Carrier khác
             is_ocl = (
                 df_taiwan[col_carrier]
                 .astype(str)
@@ -141,21 +150,24 @@ if file_export is not None and file_master is not None:
             df_ocl_exp = df_taiwan[is_ocl].copy()
             df_non_ocl_exp = df_taiwan[~is_ocl].copy()
 
-            # Merge dữ liệu
-            df_master[col_mst_master] = (
-                df_master[col_mst_master].astype(str).str.strip()
-            )
+            # Làm sạch MST trong file Master
+            df_master[col_mst_master] = clean_mst(df_master[col_mst_master])
 
+            # Hàm Merge đối chiếu dữ liệu với File Master đã làm sạch
             def process_merge(df_sub):
                 if df_sub.empty:
                     return pd.DataFrame(columns=FINAL_COLUMNS)
 
-                df_sub[col_mst_exp] = (
-                    df_sub[col_mst_exp].astype(str).str.strip()
-                )
+                # Làm sạch MST trong file Export
+                df_sub[col_mst_exp] = clean_mst(df_sub[col_mst_exp])
+
+                # Loại bỏ dòng MST rỗng hoặc không hợp lệ
+                df_sub_clean = df_sub[
+                    ~df_sub[col_mst_exp].isin(["nan", "None", ""])
+                ].copy()
 
                 merged = pd.merge(
-                    df_sub,
+                    df_sub_clean,
                     df_master,
                     left_on=col_mst_exp,
                     right_on=col_mst_master,
@@ -163,10 +175,10 @@ if file_export is not None and file_master is not None:
                     suffixes=("", "_master"),
                 )
 
-                # Khử trùng lặp theo MST
+                # Loại bỏ trùng lặp theo Mã số thuế
                 merged = merged.drop_duplicates(subset=[col_mst_exp])
 
-                # Build kết quả chuẩn 15 cột
+                # Khởi tạo kết quả đủ 15 cột
                 res = pd.DataFrame()
                 for col in FINAL_COLUMNS:
                     if col in merged.columns:
@@ -186,15 +198,15 @@ if file_export is not None and file_master is not None:
 
             # Hiển thị kết quả & Download
             st.write("---")
-            st.subheader("Kết quả lọc:")
+            st.subheader("Kết quả xử lý:")
             m1, m2, m3 = st.columns(3)
             m1.metric("Tổng lô xuất Taiwan", len(df_taiwan))
-            m2.metric("Số DN dùng OCL", len(final_ocl))
+            m2.metric("Số DN dùng Carrier OCL", len(final_ocl))
             m3.metric("Số DN dùng Carrier khác", len(final_non_ocl))
 
             col_down1, col_down2 = st.columns(2)
             with col_down1:
-                st.write("### File 1: Doanh nghiệp dùng OCL")
+                st.write("### File 1: Doanh nghiệp sử dụng OCL")
                 st.dataframe(final_ocl.head(5))
                 st.download_button(
                     label="Tải về File OCL (.xlsx)",
@@ -204,7 +216,7 @@ if file_export is not None and file_master is not None:
                 )
 
             with col_down2:
-                st.write("### File 2: Doanh nghiệp dùng Carrier Khác")
+                st.write("### File 2: Doanh nghiệp sử dụng Carrier Khác")
                 st.dataframe(final_non_ocl.head(5))
                 st.download_button(
                     label="Tải về File Non-OCL (.xlsx)",
@@ -214,4 +226,4 @@ if file_export is not None and file_master is not None:
                 )
 
     except Exception as e:
-        st.error(f"Lỗi xử lý file: {e}")
+        st.error(f"Xảy ra lỗi xử lý file: {e}")
